@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+SpotiText.app/
+dist/
+.DS_Store
