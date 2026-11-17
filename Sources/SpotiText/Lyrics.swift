@@ -260,13 +260,16 @@ final class LyricsService {
 
             let artist = Self.primaryArtist(track.artist)
 
-            if let record = try await get(track: track.name, artist: artist, album: track.album, duration: track.duration),
-               let state = record.state {
-                return (state, record.id)
+            let exact = try? await get(track: track.name, artist: artist, album: track.album, duration: track.duration)
+            if let exact, exact.hasSynced, let state = exact.state {
+                return (state, exact.id)
             }
 
-            if let best = Self.best(of: try await candidates(for: track), duration: track.duration),
-               let state = best.state {
+            var records = try await candidates(for: track)
+            if let exact, !records.contains(where: { $0.id == exact.id }) {
+                records.insert(exact, at: 0)
+            }
+            if let best = Self.best(of: records, duration: track.duration), let state = best.state {
                 return (state, best.id)
             }
             return (.notFound, nil)
@@ -279,12 +282,13 @@ final class LyricsService {
 
     func candidates(for track: TrackInfo) async throws -> [LyricsRecord] {
         let artist = Self.primaryArtist(track.artist)
-        var records = try await search(["track_name": track.name, "artist_name": artist])
+        var records = (try? await search(["track_name": track.name, "artist_name": artist])) ?? []
         let cleaned = Self.cleanTitle(track.name)
         if cleaned != track.name {
-            records += try await search(["track_name": cleaned, "artist_name": artist])
+            records += (try? await search(["track_name": cleaned, "artist_name": artist])) ?? []
         }
-        records += try await search(["q": "\(cleaned) \(artist)"])
+        records += (try? await search(["q": "\(cleaned) \(artist)"])) ?? []
+        try Task.checkCancellation()
 
         var seen = Set<Int>()
         records = records.filter { seen.insert($0.id).inserted }
@@ -329,6 +333,12 @@ final class LyricsService {
             ?? records.first { $0.hasSynced && close($0, 10) }
             ?? records.first { $0.plainLyrics?.isEmpty == false && close($0, 3) }
             ?? records.first { $0.instrumental == true && close($0, 3) }
+            ?? closest(records.filter(\.hasSynced), duration: duration)
+            ?? closest(records.filter { $0.plainLyrics?.isEmpty == false }, duration: duration)
+    }
+
+    private static func closest(_ records: [LyricsRecord], duration: Double) -> LyricsRecord? {
+        records.min { abs(($0.duration ?? 0) - duration) < abs(($1.duration ?? 0) - duration) }
     }
 
     private static func primaryArtist(_ artist: String) -> String {
